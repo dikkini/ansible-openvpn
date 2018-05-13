@@ -1,0 +1,11 @@
+---
+# defaults file for egeneralov.openvpn
+
+my_clients:
+  - client
+
+verb: 30
+days: 365
+
+country_name: RU
+organization_name: "{{ inventory_hostname }}"

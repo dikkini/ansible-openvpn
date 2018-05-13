@@ -1,0 +1,31 @@
+client
+dev tun
+proto udp
+sndbuf 0
+rcvbuf 0
+remote {{ ansible_default_ipv4.address }} 5353
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+auth SHA512
+cipher AES-256-CBC
+comp-lzo
+setenv opt block-outside-dns
+key-direction 1
+verb {{ verb }}
+
+<ca>
+{{ ca.stdout }}
+</ca>
+<cert>
+{{ client_crt.stdout }}
+</cert>
+<key>
+{{ client_key.stdout }}
+</key>
+
+<tls-auth>
+{{ ta.stdout }}
+</tls-auth>

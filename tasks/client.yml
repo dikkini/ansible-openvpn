@@ -1,0 +1,56 @@
+---
+
+- name: Get client udp status
+  stat:
+    path: "/etc/openvpn/clients/{{ item }}_udp.ovpn"
+  register: client_status_udp
+
+- name: Get client tcp status
+  stat:
+    path: "/etc/openvpn/clients/{{ item }}_tcp.ovpn"
+  register: client_status_tcp
+
+
+- name: Manage client state
+  block:
+  - name: Create client directory
+    file:
+      state: directory
+      path: "/etc/openvpn/clients/{{ item }}"
+  
+  - name: Generate client key
+    shell: "openssl genrsa -out /etc/openvpn/clients/{{ item }}/key.pem 2048"
+    args:
+      creates: "/etc/openvpn/clients/{{ item }}/key.pem"
+
+  - name: Read client key
+    shell: "cat /etc/openvpn/clients/{{ item }}/key.pem"
+    register: client_key
+    changed_when: false
+
+  - name: Generate certificate signing request
+    shell: 'openssl req -new -key /etc/openvpn/clients/{{ item }}/key.pem -out /etc/openvpn/clients/{{ item }}/csr.pem -subj "/C={{ country_name }}/emailAddress={{ item }}@{{ inventory_hostname }}/organizationName={{ organization_name }}/CN={{ item }}"'
+    args:
+      creates: "/etc/openvpn/clients/{{ item }}/csr.pem"
+  
+  - name: Create client certificate
+    shell: "openssl x509 -req -in /etc/openvpn/clients/{{ item }}/csr.pem -CA /etc/openvpn/ca.crt -CAkey /etc/openvpn/ca.key -CAcreateserial -out /etc/openvpn/clients/{{ item }}/crt.pem -days {{ days | default(365) }}"
+    args:
+      creates: "/etc/openvpn/clients/{{ item }}/crt.pem"
+  
+  - name: Read client certificate
+    shell: "cat /etc/openvpn/clients/{{ item }}/crt.pem"
+    register: client_crt
+    changed_when: false
+  
+  - name: Generate client udp configuration
+    template:
+      src: udp.client.ovpn.j2
+      dest: "/etc/openvpn/clients/{{ item }}_udp.ovpn"
+
+  - name: Generate client tcp configuration
+    template:
+      src: tcp.client.ovpn.j2
+      dest: "/etc/openvpn/clients/{{ item }}_tcp.ovpn"
+
+  when: client_status_tcp.stat.islnk is not defined or client_status_udp.stat.islnk is not defined

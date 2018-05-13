@@ -1,0 +1,33 @@
+local {{ ansible_default_ipv4.address }}
+port 5353
+proto udp
+dev tun
+sndbuf 0
+rcvbuf 0
+ca ca.crt
+cert server.crt
+key server.key
+dh dh.pem
+crl-verify crl.pem
+tls-auth ta.key 0
+auth SHA512
+topology subnet
+server 10.8.0.0 255.255.255.0
+ifconfig-pool-persist ipp_udp.txt
+push "redirect-gateway def1 bypass-dhcp"
+
+keepalive 10 120
+cipher AES-256-CBC
+comp-lzo
+user nobody
+group nogroup
+persist-key
+persist-tun
+status udp-status.log
+verb {{ verb }}
+
+explicit-exit-notify 1
+client-to-client
+push "dhcp-option DNS 1.1.1.1"
+push "dhcp-option DNS 1.0.0.1"
+push "route 1.0.0.0 255.000.000.000"

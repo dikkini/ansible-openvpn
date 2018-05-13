@@ -1,0 +1,261 @@
+---
+# tasks file for egeneralov.openvpn
+
+- name: Install dependencies
+  apt:
+    name: "{{ item }}"
+    state: present
+    update_cache: yes
+    cache_valid_time: 3600
+  with_items:
+    - openssl
+    - openvpn
+    - python-pip
+    - rng-tools
+
+
+
+- name: Fix entropy
+  block: 
+    - lineinfile:
+        path: /etc/default/rng-tools
+        regexp: '^HRNGDEVICE.*'
+        line: 'HRNGDEVICE=/dev/urandom'
+    - systemd:
+        name: rng-tools
+        state: started
+
+
+
+- name: install easy-rsa
+  block:
+    - name: Download easy-rsa
+      get_url:
+        url: https://github.com/OpenVPN/easy-rsa/releases/download/v3.0.4/EasyRSA-3.0.4.tgz
+        dest: /opt/easyrsa.tgz
+    - name: Unarchive easy-rsa
+      unarchive:
+        src: /opt/easyrsa.tgz
+        dest: /opt/
+        remote_src: yes
+    - name: Link easy-rsa
+      file:
+        state: link
+        src: /opt/EasyRSA-3.0.4
+        dest: /etc/openvpn/easy-rsa
+
+
+
+- name: Manage crts
+  block:
+  - name: Init Certificate Authority
+    shell: "./easyrsa init-pki"
+    args:
+      creates: "/opt/EasyRSA-3.0.4/pki/"
+      chdir: "/opt/EasyRSA-3.0.4/"
+  
+  - name: Build the Certificate Authority
+    shell: "./easyrsa --batch build-ca nopass"
+    args:
+      creates: "/opt/EasyRSA-3.0.4/pki/ca.crt"
+      chdir: "/opt/EasyRSA-3.0.4/"
+  
+  - name: Generate dh
+    shell: "./easyrsa gen-dh"
+    args:
+      creates: "/opt/EasyRSA-3.0.4/pki/dh.pem"
+      chdir: "/opt/EasyRSA-3.0.4/"
+  
+  - name: Generate server keys
+    shell: "./easyrsa build-server-full server nopass"
+    args:
+      creates: "/opt/EasyRSA-3.0.4/pki/private/server.key"
+      chdir: "/opt/EasyRSA-3.0.4/"
+  
+  - name: Generate crl check
+    shell: "./easyrsa gen-crl"
+    args:
+      creates: "/opt/EasyRSA-3.0.4/pki/crl.pem"
+      chdir: "/opt/EasyRSA-3.0.4/"
+    environment:
+      EASYRSA_CRL_DAYS: 3650 
+  
+  - name: "Copy crt`s to openvpn"
+    copy:
+      src: '/opt/EasyRSA-3.0.4/pki/{{ item }}'
+      dest: '/etc/openvpn/'
+      remote_src: yes
+      group: nogroup
+      owner: nobody
+      mode: 0400
+    with_items:
+      - ca.crt
+      - private/ca.key
+      - dh.pem
+      - issued/server.crt
+      - private/server.key
+      - crl.pem
+  
+  - shell: openvpn --genkey --secret /etc/openvpn/ta.key
+    args:
+      creates: /etc/openvpn/ta.key
+  
+
+
+- name: Manage service
+  block:
+    - template:
+        src: tcp.server.conf.j2
+        dest: /etc/openvpn/tcp.conf
+      register: template_tcp
+    - template:
+        src: udp.server.conf.j2
+        dest: /etc/openvpn/udp.conf
+      register: template_udp
+    - systemd:
+        name: "openvpn@{{ item }}.service"
+        state: started
+      with_items:
+        - udp
+        - tcp
+      register: ovpn_start
+    - systemd:
+        name: "openvpn@{{ item }}.service"
+        state: restarted
+      with_items:
+        - udp
+        - tcp
+      when: template_udp is changed or template_tcp is changed and ovpn_start is not changed
+
+
+
+- name: Allow packets forwarding
+  block:
+    - lineinfile:
+        path: /etc/sysctl.conf
+        regexp: '^#?net.ipv4.ip_forward=.*'
+        line: 'net.ipv4.ip_forward=1'
+      register: sysctl
+    - shell: sysctl -p
+      when: sysctl is changed
+
+
+# iptables -A FORWARD -i tun+ -j 
+# iptables -A FORWARD -i tun+ -o ens3 -m state --state RELATED,ESTABLISHED -j ACCEPT
+# iptables -A FORWARD -i ens3 -o tun+ -m state --state RELATED,ESTABLISHED -j ACCEPT
+# 
+# iptables -t nat -A POSTROUTING -s 10.8.0.0/24 -o ens3 -j MASQUERADE
+# iptables -t nat -A POSTROUTING -s 10.0.8.0/24 -o ens3 -j MASQUERADE
+
+- name: iptables
+  block:
+  - iptables:
+      chain: FORWARD
+      in_interface: tun+
+      jump: ACCEPT
+      comment: Allow openvpn
+  - iptables:
+      chain: FORWARD
+      in_interface: tun+
+      out_interface: "{{ ansible_default_ipv4.interface }}"
+      ctstate: ESTABLISHED,RELATED
+      jump: ACCEPT
+      comment: Allow openvpn
+  - iptables:
+      table: nat
+      chain: POSTROUTING
+      source: "{{ item }}"
+      out_interface: "{{ ansible_default_ipv4.interface }}"
+      jump: MASQUERADE
+      comment: Allow openvpn
+    with_items:
+      - 10.8.0.0/24
+      - 10.0.8.0/24
+
+
+# "{{ ansible_default_ipv4.interface }}"
+
+#   - iptables:
+#       table: nat
+#       chain: POSTROUTING
+#       source: "{{ item }}"
+#       out_interface: "{{ ansible_default_ipv4.interface }}"
+#       jump: MASQUERADE
+#       comment: Allow openvpn
+#     with_items:
+#       - 10.8.0.0/24
+#       - 10.0.8.0/24
+#   - iptables:
+#       chain: FORWARD
+#       source: "{{ item }}"
+#       jump: ACCEPT
+#       comment: Allow openvpn
+#     with_items:
+#       - 10.8.0.0/24
+#       - 10.0.8.0/24
+  - iptables:
+      chain: INPUT
+      protocol: tcp
+      destination: "{{ ansible_default_ipv4.address }}"
+      destination_port: 8443
+      ctstate: NEW,ESTABLISHED
+      jump: ACCEPT
+      comment: Allow openvpn
+  - iptables:
+      chain: INPUT
+      protocol: udp
+      destination: "{{ ansible_default_ipv4.address }}"
+      destination_port: 5353
+      ctstate: NEW,ESTABLISHED
+      jump: ACCEPT
+      comment: Allow openvpn
+  - name: Save iptables rulles
+    shell: /sbin/iptables-save > /etc/network/iptables.up.rules
+    changed_when: false
+
+
+- name: Ensure clients directory exist
+  file:
+    path: /etc/openvpn/clients
+    state: directory
+
+
+- name: Read CA crt
+  shell: cat /etc/openvpn/ca.crt
+  register: ca
+  changed_when: false
+
+- name: Read ta crt
+  shell: cat /etc/openvpn/ta.key
+  register: ta
+  changed_when: false
+
+- include_tasks: client.yml
+  with_items: "{{ my_clients }}"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
